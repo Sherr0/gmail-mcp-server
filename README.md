@@ -63,51 +63,93 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
 7. Rename the key file and save it to your local machine in a secure location. Take note of the location.
     - The absolute path to this file will be passed as parameter `--creds-file-path` when the server is started. 
 
-### Authentication
+### Authentication and Docker setup
 
-When the server is started, an authentication flow will be launched in your system browser. 
-Token credentials will be subsequently saved (and later retrieved) in the absolute file path passed to parameter `--token-path`.
+Authorization is an explicit manual operation. Normal `serve` mode requires an existing token and never opens a browser or starts an OAuth callback server.
 
-For example, you may use a dot directory in your home folder, replacing `[your-home-folder]`.:
+Build the local image:
 
-| Parameter       | Example                                          |
-|-----------------|--------------------------------------------------|
-| `--creds-file-path` | `/[your-home-folder]/.google/client_creds.json` |
-| `--token-path`      | `/[your-home-folder]/.google/app_tokens.json`    |
-
-
-### Usage with Desktop App
-
-Using [uv](https://docs.astral.sh/uv/) is recommended.
-
-To integrate this server with Claude Desktop as the MCP Client, add the following to your app's server configuration. By default, this is stored as `~/Library/Application\ Support/Claude/claude_desktop_config.json`. 
-
-```json
-{
-  "mcpServers": {
-    "gdrive": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "[absolute-path-to-git-repo]",
-        "run",
-        "gmail",
-        "--creds-file-path",
-        "[absolute-path-to-credentials-file]",
-        "--token-path",
-        "[absolute-path-to-access-tokens-file]"
-      ]
-    }
-  }
-}
+```bash
+docker build -t gmail-mcp:local .
 ```
 
-The following parameters must be set
-| Parameter       | Example                                          |
-|-----------------|--------------------------------------------------|
-| `--directory`   | Absolute path to `gmail` directory containing server |
-| `--creds-file-path` | Absolute path to credentials file created in Gmail API Setup. |
-| `--token-path`      | Absolute path to store and retrieve access and refresh tokens for application.  |
+Create the host directories and protect them with owner-only permissions:
+
+```bash
+install -d -m 0700 "$HOME/.config/gmail-mcp"
+install -d -m 0700 "$HOME/.local/share/gmail-mcp"
+install -m 0600 /path/to/downloaded-client-secret.json \
+  "$HOME/.config/gmail-mcp/client-secret.json"
+```
+
+The client-secret file is mounted read-only. The complete token directory is mounted read/write so token refreshes can use atomic replacement. Do not mount only `token.json`.
+
+#### First authorization
+
+Run a one-off authorization container. Port 8765 is published only on host loopback and only for the lifetime of this command:
+
+```bash
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --publish 127.0.0.1:8765:8765 \
+  --mount type=bind,src="$HOME/.config/gmail-mcp/client-secret.json",dst=/run/credentials/client-secret.json,readonly \
+  --mount type=bind,src="$HOME/.local/share/gmail-mcp",dst=/data \
+  gmail-mcp:local authorize \
+  --creds-file-path /run/credentials/client-secret.json \
+  --token-path /data/token.json \
+  --callback-host localhost \
+  --callback-bind-address 0.0.0.0 \
+  --callback-port 8765
+```
+
+Open the printed Google authorization URL in the Titan's browser and complete consent. The command saves the token and exits; it does not initialize Gmail or start MCP.
+
+Confirm the token exists with owner-only permissions:
+
+```bash
+stat -c '%a %n' "$HOME/.local/share/gmail-mcp/token.json"
+```
+
+The expected mode is `600`.
+
+#### Normal stdio operation
+
+The image's default command is `serve`, so the following is suitable as a local stdio MCP subprocess command:
+
+```bash
+docker run --rm -i \
+  --user "$(id -u):$(id -g)" \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --mount type=bind,src="$HOME/.config/gmail-mcp/client-secret.json",dst=/run/credentials/client-secret.json,readonly \
+  --mount type=bind,src="$HOME/.local/share/gmail-mcp",dst=/data \
+  gmail-mcp:local
+```
+
+Normal operation publishes no ports, launches no browser, and performs no interactive OAuth. Access-token refresh is automatic and updates `/data/token.json` through the host-mounted directory. The `-i` option keeps stdin attached for MCP; no TTY is required.
+
+If the token is missing, unusable, lacks a refresh token, or Google rejects its refresh, serve mode exits with an operator-facing error on stderr. Stop normal Gmail MCP usage, rerun the authorization command, and then restart the MCP client.
+
+Google OAuth apps in Testing status can issue refresh tokens that expire after seven days for Gmail scopes. Review the OAuth app publishing status separately before relying on long-lived authorization.
+
+Hermes configuration is intentionally not included yet. It can use `docker` as the MCP command and the normal-operation arguments above without any published port.
+
+### Native usage
+
+Using [uv](https://docs.astral.sh/uv/) is recommended. Authorization and serving are also available as explicit native commands:
+
+```bash
+uv run gmail authorize \
+  --creds-file-path /absolute/path/to/client-secret.json \
+  --token-path /absolute/path/to/token.json \
+  --callback-bind-address 127.0.0.1
+
+uv run gmail serve \
+  --creds-file-path /absolute/path/to/client-secret.json \
+  --token-path /absolute/path/to/token.json
+```
 
 ### Troubleshooting with MCP Inspector
 
@@ -115,6 +157,5 @@ To test the server, use [MCP Inspector](https://modelcontextprotocol.io/docs/too
 From the git repo, run the below changing the parameter arguments accordingly.
 
 ```bash
-npx @modelcontextprotocol/inspector uv run [absolute-path-to-git-repo]/src/gmail/server.py --creds-file-path [absolute-path-to-credentials-file] --token-path [absolute-path-to-access-tokens-file]
+npx @modelcontextprotocol/inspector uv run [absolute-path-to-git-repo]/src/gmail/server.py serve --creds-file-path [absolute-path-to-credentials-file] --token-path [absolute-path-to-access-tokens-file]
 ```
-
