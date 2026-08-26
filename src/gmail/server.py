@@ -19,6 +19,7 @@ import mcp.server.stdio
 
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -28,6 +29,72 @@ from googleapiclient.errors import HttpError
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+
+
+class AuthorizationRequiredError(RuntimeError):
+    """Raised when serve mode cannot authenticate non-interactively."""
+
+
+def secure_token_permissions(token_path: str) -> None:
+    """Ensure an existing token file is accessible only by its owner."""
+    mode = stat.S_IMODE(os.stat(token_path).st_mode)
+    if mode != 0o600:
+        logger.warning(
+            "Token file %s has permissions %04o; correcting them to 0600",
+            token_path,
+            mode,
+        )
+        os.chmod(token_path, 0o600)
+
+
+def save_token(token: Credentials, token_path: str) -> None:
+    """Atomically save a token with owner-only permissions."""
+    token_directory = os.path.dirname(os.path.abspath(token_path))
+    temporary_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=token_directory,
+            prefix=f'.{os.path.basename(token_path)}.',
+            delete=False,
+        ) as token_file:
+            temporary_path = token_file.name
+            os.fchmod(token_file.fileno(), 0o600)
+            token_file.write(token.to_json())
+            token_file.flush()
+            os.fsync(token_file.fileno())
+
+        os.replace(temporary_path, token_path)
+        os.chmod(token_path, 0o600)
+    except Exception:
+        if temporary_path is not None:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def authorize(creds_file_path: str,
+              token_path: str,
+              callback_host: str,
+              callback_bind_address: str,
+              callback_port: int) -> None:
+    """Run interactive OAuth explicitly and save the resulting token."""
+    flow = InstalledAppFlow.from_client_secrets_file(creds_file_path, GMAIL_SCOPES)
+    token = flow.run_local_server(
+        host=callback_host,
+        bind_addr=callback_bind_address,
+        port=callback_port,
+        open_browser=False,
+    )
+    save_token(token, token_path)
+    logger.info("Token saved to %s", token_path)
+
 
 EMAIL_ADMIN_PROMPTS = """You are an email administrator. 
 You can draft, edit, read, trash, open, and send emails.
@@ -108,7 +175,7 @@ class GmailService:
     def __init__(self,
                  creds_file_path: str,
                  token_path: str,
-                 scopes: list[str] = ['https://www.googleapis.com/auth/gmail.modify']):
+                 scopes: list[str] = GMAIL_SCOPES):
         logger.info(f"Initializing GmailService with creds file: {creds_file_path}")
         self.creds_file_path = creds_file_path
         self.token_path = token_path
@@ -120,67 +187,34 @@ class GmailService:
         self.user_email = self._get_user_email()
         logger.info(f"User email retrieved: {self.user_email}")
 
-    def _secure_token_permissions(self) -> None:
-        """Ensure an existing token file is accessible only by its owner."""
-        mode = stat.S_IMODE(os.stat(self.token_path).st_mode)
-        if mode != 0o600:
-            logger.warning(
-                "Token file %s has permissions %04o; correcting them to 0600",
-                self.token_path,
-                mode,
-            )
-            os.chmod(self.token_path, 0o600)
-
-    def _save_token(self, token: Credentials) -> None:
-        """Atomically save a token with owner-only permissions."""
-        token_directory = os.path.dirname(os.path.abspath(self.token_path))
-        temporary_path = None
+    def _get_token(self) -> Credentials:
+        """Load or refresh a token without initiating interactive OAuth."""
+        if not os.path.exists(self.token_path):
+            raise AuthorizationRequiredError("OAuth token file is missing")
 
         try:
-            with tempfile.NamedTemporaryFile(
-                mode='w',
-                encoding='utf-8',
-                dir=token_directory,
-                prefix=f'.{os.path.basename(self.token_path)}.',
-                delete=False,
-            ) as token_file:
-                temporary_path = token_file.name
-                os.fchmod(token_file.fileno(), 0o600)
-                token_file.write(token.to_json())
-                token_file.flush()
-                os.fsync(token_file.fileno())
-
-            os.replace(temporary_path, self.token_path)
-            os.chmod(self.token_path, 0o600)
-        except Exception:
-            if temporary_path is not None:
-                try:
-                    os.unlink(temporary_path)
-                except FileNotFoundError:
-                    pass
-            raise
-
-    def _get_token(self) -> Credentials:
-        """Get or refresh Google API token"""
-
-        token = None
-    
-        if os.path.exists(self.token_path):
-            self._secure_token_permissions()
+            secure_token_permissions(self.token_path)
             logger.info('Loading token from file')
             token = Credentials.from_authorized_user_file(self.token_path, self.scopes)
+        except (OSError, ValueError) as error:
+            raise AuthorizationRequiredError("OAuth token file is unusable") from error
 
-        if not token or not token.valid:
-            if token and token.expired and token.refresh_token:
+        if not token.refresh_token:
+            raise AuthorizationRequiredError("OAuth token has no refresh token")
+
+        if not token.valid:
+            if token.expired:
                 logger.info('Refreshing token')
-                token.refresh(Request())
+                try:
+                    token.refresh(Request())
+                except RefreshError as error:
+                    raise AuthorizationRequiredError(
+                        "OAuth token refresh was rejected"
+                    ) from error
+                save_token(token, self.token_path)
+                logger.info('Token saved to %s', self.token_path)
             else:
-                logger.info('Fetching new token')
-                flow = InstalledAppFlow.from_client_secrets_file(self.creds_file_path, self.scopes)
-                token = flow.run_local_server(port=0)
-
-            self._save_token(token)
-            logger.info(f'Token saved to {self.token_path}')
+                raise AuthorizationRequiredError("OAuth token is unusable")
 
         return token
 
@@ -562,14 +596,78 @@ async def main(creds_file_path: str,
             ),
         )
 
-if __name__ == "__main__":
+
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create the command-line parser for authorization and MCP serving."""
     parser = argparse.ArgumentParser(description='Gmail API MCP Server')
-    parser.add_argument('--creds-file-path',
-                        required=True,
-                       help='OAuth 2.0 credentials file path')
-    parser.add_argument('--token-path',
-                        required=True,
-                       help='File location to store and retrieve access and refresh tokens for application')
-    
+    commands = parser.add_subparsers(dest='command', required=True)
+
+    def add_credential_arguments(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            '--creds-file-path',
+            required=True,
+            help='OAuth 2.0 credentials file path',
+        )
+        command_parser.add_argument(
+            '--token-path',
+            required=True,
+            help='File location to store and retrieve OAuth tokens',
+        )
+
+    serve_parser = commands.add_parser(
+        'serve',
+        help='Run the stdio MCP server using an existing token',
+    )
+    add_credential_arguments(serve_parser)
+
+    authorize_parser = commands.add_parser(
+        'authorize',
+        help='Run the interactive OAuth flow without starting MCP',
+    )
+    add_credential_arguments(authorize_parser)
+    authorize_parser.add_argument(
+        '--callback-host',
+        default='localhost',
+        help='Hostname advertised in the OAuth redirect URI',
+    )
+    authorize_parser.add_argument(
+        '--callback-bind-address',
+        default='0.0.0.0',
+        help='Address on which the callback listener binds',
+    )
+    authorize_parser.add_argument(
+        '--callback-port',
+        type=int,
+        default=8765,
+        help='Fixed OAuth callback port',
+    )
+
+    return parser
+
+
+def cli_main() -> None:
+    """Run the selected command-line mode."""
+    parser = create_argument_parser()
     args = parser.parse_args()
-    asyncio.run(main(args.creds_file_path, args.token_path))
+
+    if args.command == 'authorize':
+        authorize(
+            args.creds_file_path,
+            args.token_path,
+            args.callback_host,
+            args.callback_bind_address,
+            args.callback_port,
+        )
+        return
+
+    try:
+        asyncio.run(main(args.creds_file_path, args.token_path))
+    except AuthorizationRequiredError as error:
+        parser.exit(
+            1,
+            f"Authorization required: {error}. Run the 'gmail authorize' command.\n",
+        )
+
+
+if __name__ == "__main__":
+    cli_main()
