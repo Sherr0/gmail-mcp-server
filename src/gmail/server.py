@@ -245,9 +245,6 @@ class GmailService:
             
             logger.info(f"Email read: {email_id}")
             
-            # We want to mark email as read once we read it
-            await self.mark_email_as_read(email_id)
-
             return email_metadata
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
@@ -398,7 +395,7 @@ async def main(creds_file_path: str,
             ),
             types.Tool(
                 name="read-email",
-                description="Retrieves given email content",
+                description="Retrieves given email content without modifying it",
                 inputSchema={
                     "type": "object",
                     "properties": {

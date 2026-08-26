@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
   - Retrieves given email content
   - Input:
     - `email_id` (string): Auto-generated ID of email
-  - Returns dictionary of email metadata and marks email as read
+  - Returns dictionary of email metadata without modifying the email
 
 - **open-email**
   - Open email in browser
