@@ -4,6 +4,8 @@ import os
 import asyncio
 import logging
 import base64
+import stat
+import tempfile
 from email.message import EmailMessage
 from email.header import decode_header
 from base64 import urlsafe_b64decode
@@ -118,12 +120,53 @@ class GmailService:
         self.user_email = self._get_user_email()
         logger.info(f"User email retrieved: {self.user_email}")
 
+    def _secure_token_permissions(self) -> None:
+        """Ensure an existing token file is accessible only by its owner."""
+        mode = stat.S_IMODE(os.stat(self.token_path).st_mode)
+        if mode != 0o600:
+            logger.warning(
+                "Token file %s has permissions %04o; correcting them to 0600",
+                self.token_path,
+                mode,
+            )
+            os.chmod(self.token_path, 0o600)
+
+    def _save_token(self, token: Credentials) -> None:
+        """Atomically save a token with owner-only permissions."""
+        token_directory = os.path.dirname(os.path.abspath(self.token_path))
+        temporary_path = None
+
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=token_directory,
+                prefix=f'.{os.path.basename(self.token_path)}.',
+                delete=False,
+            ) as token_file:
+                temporary_path = token_file.name
+                os.fchmod(token_file.fileno(), 0o600)
+                token_file.write(token.to_json())
+                token_file.flush()
+                os.fsync(token_file.fileno())
+
+            os.replace(temporary_path, self.token_path)
+            os.chmod(self.token_path, 0o600)
+        except Exception:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+            raise
+
     def _get_token(self) -> Credentials:
         """Get or refresh Google API token"""
 
         token = None
     
         if os.path.exists(self.token_path):
+            self._secure_token_permissions()
             logger.info('Loading token from file')
             token = Credentials.from_authorized_user_file(self.token_path, self.scopes)
 
@@ -136,9 +179,8 @@ class GmailService:
                 flow = InstalledAppFlow.from_client_secrets_file(self.creds_file_path, self.scopes)
                 token = flow.run_local_server(port=0)
 
-            with open(self.token_path, 'w') as token_file:
-                token_file.write(token.to_json())
-                logger.info(f'Token saved to {self.token_path}')
+            self._save_token(token)
+            logger.info(f'Token saved to {self.token_path}')
 
         return token
 
