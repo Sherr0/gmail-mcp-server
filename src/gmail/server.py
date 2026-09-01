@@ -351,6 +351,19 @@ class GmailService:
             return "Email moved to trash successfully."
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
+
+    async def archive_email(self, email_id: str) -> str:
+        """Remove a message from the Inbox without deleting it or marking it read."""
+        try:
+            self.service.users().messages().modify(
+                userId="me",
+                id=email_id,
+                body={'removeLabelIds': ['INBOX']},
+            ).execute()
+            logger.info(f"Email archived: {email_id}")
+            return f"Email archived successfully: {email_id}"
+        except HttpError as error:
+            return f"An HttpError occurred: {str(error)}"
         
     async def mark_email_as_read(self, email_id: str) -> str:
         """Marks email as read given ID."""
@@ -479,6 +492,23 @@ async def main(creds_file_path: str,
                 },
             ),
             types.Tool(
+                name="archive-email",
+                description=(
+                    "Removes a message from the Inbox without deleting it or marking "
+                    "it as read."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_id": {
+                            "type": "string",
+                            "description": "ID of the message to archive",
+                        },
+                    },
+                    "required": ["email_id"],
+                },
+            ),
+            types.Tool(
                 name="get-unread-emails",
                 description=(
                     "Retrieve compact metadata for unread messages in the Primary Inbox "
@@ -601,6 +631,13 @@ async def main(creds_file_path: str,
                 raise ValueError("Missing email ID parameter")
                 
             msg = await gmail_service.trash_email(email_id)
+            return [types.TextContent(type="text", text=str(msg))]
+        if name == "archive-email":
+            email_id = arguments.get("email_id")
+            if not email_id:
+                raise ValueError("Missing email ID parameter")
+
+            msg = await gmail_service.archive_email(email_id)
             return [types.TextContent(type="text", text=str(msg))]
         if name == "mark-email-as-read":
             email_id = arguments.get("email_id")

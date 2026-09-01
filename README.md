@@ -25,6 +25,12 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
     - `email_id` (string): Auto-generated ID of email
   - Returns success message
 
+- **archive-email**
+  - Removes a message from the Inbox without deleting it or marking it as read
+  - Input:
+    - `email_id` (string, required): ID of the message to archive
+  - Returns a success response containing the archived message ID
+
 - **mark-email-as-read**
   - Marks email as read 
   - Input:
