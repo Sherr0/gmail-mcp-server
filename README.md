@@ -37,6 +37,13 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
     - `email_id` (string, required): ID of the message to archive
   - Returns a success response containing the archived message ID
 
+- **archive-emails**
+  - Archives 1 to 100 messages by removing only the `INBOX` label
+  - Archiving does not mark messages as read and does not delete messages
+  - Input:
+    - `email_ids` (array of non-empty strings, required): Message IDs to archive
+  - Returns authoritative totals and a success or failure result for every message ID
+
 - **mark-email-as-read**
   - Marks email as read 
   - Input:

@@ -429,6 +429,42 @@ class GmailService:
             return f"Email archived successfully: {email_id}"
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
+
+    async def archive_emails(self, email_ids: list[str]) -> dict[str, Any]:
+        """Archive multiple messages and report each operation's result."""
+        if not isinstance(email_ids, list):
+            raise ValueError("email_ids must be a list")
+        if not email_ids:
+            raise ValueError("email_ids must contain at least one message ID")
+        if len(email_ids) > 100:
+            raise ValueError("email_ids must contain no more than 100 message IDs")
+        if any(not isinstance(email_id, str) or not email_id.strip() for email_id in email_ids):
+            raise ValueError("every email_id must be a non-empty string")
+
+        results = []
+        for email_id in email_ids:
+            try:
+                self.service.users().messages().modify(
+                    userId="me",
+                    id=email_id,
+                    body={'removeLabelIds': ['INBOX']},
+                ).execute()
+                logger.info(f"Email archived: {email_id}")
+                results.append({'id': email_id, 'success': True})
+            except HttpError as error:
+                results.append({
+                    'id': email_id,
+                    'success': False,
+                    'error': str(error),
+                })
+
+        succeeded = sum(result['success'] for result in results)
+        return {
+            'requested': len(email_ids),
+            'succeeded': succeeded,
+            'failed': len(email_ids) - succeeded,
+            'results': results,
+        }
         
     async def mark_email_as_read(self, email_id: str) -> str:
         """Marks email as read given ID."""
@@ -591,6 +627,27 @@ async def main(creds_file_path: str,
                         },
                     },
                     "required": ["email_id"],
+                },
+            ),
+            types.Tool(
+                name="archive-emails",
+                description=(
+                    "Archives multiple messages by removing only the Inbox label, "
+                    "without deleting them or marking them as read, and reports "
+                    "success or failure for each message."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_ids": {
+                            "type": "array",
+                            "description": "Message IDs to archive by removing only the Inbox label",
+                            "items": {"type": "string", "minLength": 1},
+                            "minItems": 1,
+                            "maxItems": 100,
+                        },
+                    },
+                    "required": ["email_ids"],
                 },
             ),
             types.Tool(
@@ -760,6 +817,11 @@ async def main(creds_file_path: str,
 
             msg = await gmail_service.archive_email(email_id)
             return [types.TextContent(type="text", text=str(msg))]
+        if name == "archive-emails":
+            arguments = arguments or {}
+            email_ids = arguments.get("email_ids")
+            result = await gmail_service.archive_emails(email_ids)
+            return [types.TextContent(type="text", text=str(result), artifact={"type": "json", "data": result})]
         if name == "mark-email-as-read":
             email_id = arguments.get("email_id")
             if not email_id:
