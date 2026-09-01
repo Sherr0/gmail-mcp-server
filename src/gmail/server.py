@@ -263,26 +263,44 @@ class GmailService:
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
 
-    async def get_unread_emails(self) -> list[dict[str, str]]| str:
-        """
-        Retrieves unread messages from mailbox.
-        Returns list of messsage IDs in key 'id'."""
+    async def get_unread_emails(self, max_results: int = 20) -> list[dict[str, str]] | str:
+        """Retrieve compact metadata for unread messages in the Primary Inbox."""
+        if isinstance(max_results, bool) or not isinstance(max_results, int):
+            raise ValueError("max_results must be an integer")
+        if not 1 <= max_results <= 100:
+            raise ValueError("max_results must be between 1 and 100")
+
         try:
             user_id = 'me'
             query = 'in:inbox is:unread category:primary'
 
-            response = self.service.users().messages().list(userId=user_id,
-                                                        q=query).execute()
-            messages = []
-            if 'messages' in response:
-                messages.extend(response['messages'])
+            response = self.service.users().messages().list(
+                userId=user_id,
+                q=query,
+                maxResults=max_results,
+            ).execute()
 
-            while 'nextPageToken' in response:
-                page_token = response['nextPageToken']
-                response = self.service.users().messages().list(userId=user_id, q=query,
-                                                    pageToken=page_token).execute()
-                messages.extend(response['messages'])
-            return messages
+            emails = []
+            for message in response.get('messages', []):
+                metadata = self.service.users().messages().get(
+                    userId=user_id,
+                    id=message['id'],
+                    format='metadata',
+                    metadataHeaders=['From', 'Subject', 'Date'],
+                ).execute()
+                headers = {
+                    header['name'].lower(): header.get('value', '')
+                    for header in metadata.get('payload', {}).get('headers', [])
+                }
+                emails.append({
+                    'id': metadata.get('id', message['id']),
+                    'thread_id': metadata.get('threadId', message.get('threadId', '')),
+                    'from': decode_mime_header(headers.get('from', '')),
+                    'subject': decode_mime_header(headers.get('subject', '')),
+                    'date': headers.get('date', ''),
+                    'snippet': metadata.get('snippet', ''),
+                })
+            return emails
 
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
@@ -462,10 +480,22 @@ async def main(creds_file_path: str,
             ),
             types.Tool(
                 name="get-unread-emails",
-                description="Retrieve unread emails",
+                description=(
+                    "Retrieve compact metadata for unread messages in the Primary Inbox "
+                    "without marking them read. Returns id, thread_id, from, subject, "
+                    "date, and snippet."
+                ),
                 inputSchema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of unread emails to return (default 20, maximum 100)",
+                            "default": 20,
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                    },
                     "required": []
                 },
             ),
@@ -546,8 +576,9 @@ async def main(creds_file_path: str,
             return [types.TextContent(type="text", text=response_text)]
 
         if name == "get-unread-emails":
-                
-            unread_emails = await gmail_service.get_unread_emails()
+            arguments = arguments or {}
+            max_results = arguments.get("max_results", 20)
+            unread_emails = await gmail_service.get_unread_emails(max_results)
             return [types.TextContent(type="text", text=str(unread_emails),artifact={"type": "json", "data": unread_emails} )]
         
         if name == "read-email":

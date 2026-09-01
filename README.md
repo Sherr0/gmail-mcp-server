@@ -32,8 +32,10 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
   - Returns success message
 
 - **get-unread-emails**
-  - Retrieves unread emails 
-  - Returns list of emails including email ID
+  - Retrieves unread messages from the Primary Inbox without modifying or marking them as read
+  - Input:
+    - `max_results` (integer, optional): Maximum messages to return (default: 20, maximum: 100)
+  - Returns a compact list containing `id`, `thread_id`, `from`, `subject`, `date`, and `snippet`
 
 - **read-email**
   - Retrieves given email content
