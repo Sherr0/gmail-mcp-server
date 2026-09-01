@@ -382,6 +382,41 @@ class GmailService:
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
 
+    async def trash_emails(self, email_ids: list[str]) -> dict[str, Any]:
+        """Move multiple messages to Trash and report each operation's result."""
+        if not isinstance(email_ids, list):
+            raise ValueError("email_ids must be a list")
+        if not email_ids:
+            raise ValueError("email_ids must contain at least one message ID")
+        if len(email_ids) > 100:
+            raise ValueError("email_ids must contain no more than 100 message IDs")
+        if any(not isinstance(email_id, str) or not email_id.strip() for email_id in email_ids):
+            raise ValueError("every email_id must be a non-empty string")
+
+        results = []
+        for email_id in email_ids:
+            try:
+                self.service.users().messages().trash(
+                    userId="me",
+                    id=email_id,
+                ).execute()
+                logger.info(f"Email moved to trash: {email_id}")
+                results.append({'id': email_id, 'success': True})
+            except HttpError as error:
+                results.append({
+                    'id': email_id,
+                    'success': False,
+                    'error': str(error),
+                })
+
+        succeeded = sum(result['success'] for result in results)
+        return {
+            'requested': len(email_ids),
+            'succeeded': succeeded,
+            'failed': len(email_ids) - succeeded,
+            'results': results,
+        }
+
     async def archive_email(self, email_id: str) -> str:
         """Remove a message from the Inbox without deleting it or marking it read."""
         try:
@@ -519,6 +554,26 @@ async def main(creds_file_path: str,
                         },
                     },
                     "required": ["email_id"],
+                },
+            ),
+            types.Tool(
+                name="trash-emails",
+                description=(
+                    "Moves multiple messages to Gmail Trash without permanently "
+                    "deleting them and reports success or failure for each message."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_ids": {
+                            "type": "array",
+                            "description": "Message IDs to move to Gmail Trash, not permanently delete",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": 100,
+                        },
+                    },
+                    "required": ["email_ids"],
                 },
             ),
             types.Tool(
@@ -693,6 +748,11 @@ async def main(creds_file_path: str,
                 
             msg = await gmail_service.trash_email(email_id)
             return [types.TextContent(type="text", text=str(msg))]
+        if name == "trash-emails":
+            arguments = arguments or {}
+            email_ids = arguments.get("email_ids")
+            result = await gmail_service.trash_emails(email_ids)
+            return [types.TextContent(type="text", text=str(result), artifact={"type": "json", "data": result})]
         if name == "archive-email":
             email_id = arguments.get("email_id")
             if not email_id:

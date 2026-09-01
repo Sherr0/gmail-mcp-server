@@ -25,6 +25,12 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
     - `email_id` (string): Auto-generated ID of email
   - Returns success message
 
+- **trash-emails**
+  - Moves 1 to 100 messages to Gmail Trash without permanently deleting them
+  - Input:
+    - `email_ids` (array of strings, required): Message IDs to move to Trash
+  - Returns authoritative totals and a success or failure result for every message ID
+
 - **archive-email**
   - Removes a message from the Inbox without deleting it or marking it as read
   - Input:
