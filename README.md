@@ -43,6 +43,13 @@ https://github.com/user-attachments/assets/5794cd16-00d2-45a2-884a-8ba0c3a90c90
     - `max_results` (integer, optional): Maximum messages to return (default: 20, maximum: 100)
   - Returns a compact list containing `id`, `thread_id`, `from`, `subject`, `date`, and `snippet`
 
+- **search-emails**
+  - Searches messages using Gmail search syntax without retrieving full bodies or modifying messages
+  - Input:
+    - `query` (string, required): Gmail search query, such as `from:unraid.sherros@gmail.com newer_than:30d`, `older_than:1y`, `from:example@example.com`, or `subject:invoice`
+    - `max_results` (integer, optional): Maximum messages to return (default: 20, maximum: 100)
+  - Returns a compact list containing `id`, `thread_id`, `from`, `subject`, `date`, and `snippet`
+
 - **read-email**
   - Retrieves given email content
   - Input:

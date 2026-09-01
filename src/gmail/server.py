@@ -263,6 +263,27 @@ class GmailService:
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
 
+    def _get_compact_email_metadata(self, message: dict[str, str]) -> dict[str, str]:
+        """Retrieve compact message metadata without downloading the message body."""
+        metadata = self.service.users().messages().get(
+            userId='me',
+            id=message['id'],
+            format='metadata',
+            metadataHeaders=['From', 'Subject', 'Date'],
+        ).execute()
+        headers = {
+            header['name'].lower(): header.get('value', '')
+            for header in metadata.get('payload', {}).get('headers', [])
+        }
+        return {
+            'id': metadata.get('id', message['id']),
+            'thread_id': metadata.get('threadId', message.get('threadId', '')),
+            'from': decode_mime_header(headers.get('from', '')),
+            'subject': decode_mime_header(headers.get('subject', '')),
+            'date': headers.get('date', ''),
+            'snippet': metadata.get('snippet', ''),
+        }
+
     async def get_unread_emails(self, max_results: int = 20) -> list[dict[str, str]] | str:
         """Retrieve compact metadata for unread messages in the Primary Inbox."""
         if isinstance(max_results, bool) or not isinstance(max_results, int):
@@ -280,28 +301,37 @@ class GmailService:
                 maxResults=max_results,
             ).execute()
 
-            emails = []
-            for message in response.get('messages', []):
-                metadata = self.service.users().messages().get(
-                    userId=user_id,
-                    id=message['id'],
-                    format='metadata',
-                    metadataHeaders=['From', 'Subject', 'Date'],
-                ).execute()
-                headers = {
-                    header['name'].lower(): header.get('value', '')
-                    for header in metadata.get('payload', {}).get('headers', [])
-                }
-                emails.append({
-                    'id': metadata.get('id', message['id']),
-                    'thread_id': metadata.get('threadId', message.get('threadId', '')),
-                    'from': decode_mime_header(headers.get('from', '')),
-                    'subject': decode_mime_header(headers.get('subject', '')),
-                    'date': headers.get('date', ''),
-                    'snippet': metadata.get('snippet', ''),
-                })
-            return emails
+            return [
+                self._get_compact_email_metadata(message)
+                for message in response.get('messages', [])
+            ]
 
+        except HttpError as error:
+            return f"An HttpError occurred: {str(error)}"
+
+    async def search_emails(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict[str, str]] | str:
+        """Search messages and return compact metadata without modifying them."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be a non-empty string")
+        if isinstance(max_results, bool) or not isinstance(max_results, int):
+            raise ValueError("max_results must be an integer")
+        if not 1 <= max_results <= 100:
+            raise ValueError("max_results must be between 1 and 100")
+
+        try:
+            response = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=max_results,
+            ).execute()
+            return [
+                self._get_compact_email_metadata(message)
+                for message in response.get('messages', [])
+            ]
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
 
@@ -530,6 +560,30 @@ async def main(creds_file_path: str,
                 },
             ),
             types.Tool(
+                name="search-emails",
+                description=(
+                    "Search messages using Gmail search syntax and return compact "
+                    "metadata without retrieving full bodies or modifying messages."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Gmail search query, such as from:sender@example.com newer_than:30d",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of matching emails to return (default 20, maximum 100)",
+                            "default": 20,
+                            "minimum": 1,
+                            "maximum": 100,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            ),
+            types.Tool(
                 name="read-email",
                 description="Retrieves given email content without modifying it",
                 inputSchema={
@@ -610,6 +664,13 @@ async def main(creds_file_path: str,
             max_results = arguments.get("max_results", 20)
             unread_emails = await gmail_service.get_unread_emails(max_results)
             return [types.TextContent(type="text", text=str(unread_emails),artifact={"type": "json", "data": unread_emails} )]
+
+        if name == "search-emails":
+            arguments = arguments or {}
+            query = arguments.get("query")
+            max_results = arguments.get("max_results", 20)
+            matching_emails = await gmail_service.search_emails(query, max_results)
+            return [types.TextContent(type="text", text=str(matching_emails), artifact={"type": "json", "data": matching_emails})]
         
         if name == "read-email":
             email_id = arguments.get("email_id")
