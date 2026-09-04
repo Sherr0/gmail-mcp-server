@@ -2,6 +2,7 @@ from typing import Any
 import argparse
 import os
 import asyncio
+import json
 import logging
 import base64
 import stat
@@ -313,7 +314,8 @@ class GmailService:
         self,
         query: str,
         max_results: int = 20,
-    ) -> list[dict[str, str]] | str:
+        next_page_token: str | None = None,
+    ) -> dict[str, Any] | str:
         """Search messages and return compact metadata without modifying them."""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a non-empty string")
@@ -323,15 +325,37 @@ class GmailService:
             raise ValueError("max_results must be between 1 and 100")
 
         try:
+            list_arguments = {
+                'userId': 'me',
+                'q': query,
+                'maxResults': max_results,
+            }
+            if next_page_token is not None:
+                list_arguments['pageToken'] = next_page_token
+
             response = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=max_results,
+                **list_arguments,
             ).execute()
-            return [
+            logger.info(
+                "search-emails debug: %s",
+                json.dumps({
+                    "query": query,
+                    "requested_max_results": max_results,
+                    "returned_messages": len(response.get('messages', [])),
+                    "result_size_estimate": response.get('resultSizeEstimate'),
+                    "has_next_page_token": 'nextPageToken' in response,
+                }),
+            )
+            messages = [
                 self._get_compact_email_metadata(message)
                 for message in response.get('messages', [])
             ]
+            return {
+                "messages": messages,
+                "next_page_token": response.get('nextPageToken'),
+                "result_size_estimate": response.get('resultSizeEstimate'),
+                "returned_messages": len(messages),
+            }
         except HttpError as error:
             return f"An HttpError occurred: {str(error)}"
 
@@ -691,6 +715,10 @@ async def main(creds_file_path: str,
                             "minimum": 1,
                             "maximum": 100,
                         },
+                        "next_page_token": {
+                            "type": "string",
+                            "description": "Token returned by a previous search-emails call to retrieve the next page",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -781,7 +809,12 @@ async def main(creds_file_path: str,
             arguments = arguments or {}
             query = arguments.get("query")
             max_results = arguments.get("max_results", 20)
-            matching_emails = await gmail_service.search_emails(query, max_results)
+            next_page_token = arguments.get("next_page_token")
+            matching_emails = await gmail_service.search_emails(
+                query,
+                max_results,
+                next_page_token,
+            )
             return [types.TextContent(type="text", text=str(matching_emails), artifact={"type": "json", "data": matching_emails})]
         
         if name == "read-email":
